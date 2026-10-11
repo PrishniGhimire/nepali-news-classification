@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+outputs/
+*.joblib
+.pytest_cache/
+data/np20ng.csv
+data/news.csv
+*.zip
+.DS_Store
+.vscode/
