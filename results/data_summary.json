@@ -1,0 +1,62 @@
+{
+  "rows": 10000,
+  "columns": [
+    "label",
+    "text"
+  ],
+  "missing_text": 0,
+  "missing_label": 0,
+  "empty_after_cleaning": 1,
+  "exact_duplicate_rows_after_cleaning": 11,
+  "texts_with_conflicting_labels": 0,
+  "n_classes": 20,
+  "class_counts": {
+    "Arts": 500,
+    "Automobile": 500,
+    "Bank": 500,
+    "Business": 500,
+    "Crime": 500,
+    "Economy": 500,
+    "Education": 500,
+    "Employment": 500,
+    "Entertainment": 500,
+    "Health": 500,
+    "Lifestyle": 500,
+    "Literature": 500,
+    "Market": 500,
+    "Opinion": 500,
+    "Politics": 500,
+    "Society": 500,
+    "Sports": 500,
+    "Technology": 499,
+    "Tourism": 500,
+    "World": 500
+  },
+  "imbalance_ratio_max_over_min": 1.0,
+  "length_characters": {
+    "min": 4,
+    "median": 1311.0,
+    "mean": 2098.9,
+    "p90": 4454.000000000004,
+    "p99": 11752.260000000006,
+    "max": 41272
+  },
+  "length_words": {
+    "min": 1,
+    "median": 201.0,
+    "mean": 326.2,
+    "p90": 697.2000000000007,
+    "p99": 1907.1600000000035,
+    "max": 6777
+  },
+  "length_tokens": {
+    "min": 3,
+    "median": 340.0,
+    "mean": 549.9,
+    "p90": 1180.0,
+    "p99": 3100.2600000000057,
+    "max": 11121
+  },
+  "tokenizer": "xlm-roberta-base",
+  "share_truncated_at_256_tokens": 0.648
+}

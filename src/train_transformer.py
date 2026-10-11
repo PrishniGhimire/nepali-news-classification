@@ -5,7 +5,9 @@ schedule, mixed precision on CUDA, gradient accumulation and clipping, optional 
 weights, model selection on validation macro-F1 with early stopping.
 
 Usage:
+    python -m src.train_transformer --config configs/xlm-roberta-base.json
     python -m src.train_transformer --data data/news.csv --model_name xlm-roberta-base
+    python -m src.train_transformer --data data/news.csv --smoke_test     # tiny CPU/laptop check
 """
 from __future__ import annotations
 
@@ -28,10 +30,13 @@ from transformers import (
     get_linear_schedule_with_warmup,
 )
 
-from .data import load_dataset, make_splits, save_label_map
+from .data import check_no_overlap, load_dataset, make_splits, save_label_map, save_split_definition
 from .metrics import compute_metrics, save_predictions, save_report
 
 log = logging.getLogger("train")
+
+SMOKE_TRAIN_SAMPLES = 200
+SMOKE_EVAL_SAMPLES = 200
 
 
 class NewsDataset(Dataset):
@@ -55,8 +60,14 @@ class NewsDataset(Dataset):
 
 
 def parse_args() -> argparse.Namespace:
+    # Read --config first so its values can become the defaults of every other option.
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config")
+    known, _ = pre.parse_known_args()
+
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--data", required=True, help="CSV with a text column and a label column")
+    p.add_argument("--config", help="JSON file with default values for the options below; command-line flags override it")
+    p.add_argument("--data", help="CSV with a text column and a label column")
     p.add_argument("--text_col", default="text")
     p.add_argument("--label_col", default="label")
     p.add_argument("--model_name", default="xlm-roberta-base",
@@ -75,10 +86,25 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--class_weights", action="store_true", help="Weight the loss by inverse class frequency")
     p.add_argument("--no_amp", action="store_true", help="Disable mixed precision on CUDA")
     p.add_argument("--max_train_samples", type=int, default=None, help="Subsample the training set (quick debugging)")
+    p.add_argument("--smoke_test", action="store_true",
+                   help=f"Tiny end-to-end check (1 epoch, {SMOKE_TRAIN_SAMPLES} train and {SMOKE_EVAL_SAMPLES} val/test articles, "
+                        "short sequences). Proves the code runs; the scores are NOT a real result.")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--val_size", type=float, default=0.1)
     p.add_argument("--test_size", type=float, default=0.1)
-    return p.parse_args()
+
+    if known.config:
+        cfg = json.loads(Path(known.config).read_text(encoding="utf-8"))
+        valid = {a.dest for a in p._actions}
+        unknown = sorted(set(cfg) - valid)
+        if unknown:
+            p.error(f"Unknown option(s) in {known.config}: {unknown}")
+        p.set_defaults(**cfg)
+
+    args = p.parse_args()
+    if not args.data:
+        p.error("--data is required (on the command line or in --config)")
+    return args
 
 
 def set_seed(seed: int) -> None:
@@ -120,7 +146,14 @@ def main() -> None:
     args = parse_args()
     set_seed(args.seed)
 
-    out = Path(args.output_dir or f"outputs/{args.model_name.replace('/', '_')}")
+    run_name = args.model_name.replace("/", "_").rstrip("_")
+    if args.smoke_test:
+        args.max_train_samples = SMOKE_TRAIN_SAMPLES
+        args.epochs, args.max_length, args.batch_size, args.eval_batch_size = 1, 64, 8, 16
+        args.output_dir = args.output_dir or f"outputs/{Path(run_name).name}-smoke"
+        log.warning("SMOKE TEST: tiny subset, 1 epoch, short sequences. "
+                    "This only checks that the code runs; the scores are NOT a real result.")
+    out = Path(args.output_dir or f"outputs/{Path(run_name).name}")
     best_dir = out / "best"
     out.mkdir(parents=True, exist_ok=True)
 
@@ -132,11 +165,17 @@ def main() -> None:
     # ---- data ---------------------------------------------------------------
     df = load_dataset(args.data, args.text_col, args.label_col)
     splits = make_splits(df, args.val_size, args.test_size, args.seed)
-    train_df = splits.train
+    check_no_overlap(splits)
+    save_split_definition(splits, out / "splits.csv")
+
+    train_df, val_df, test_df = splits.train, splits.val, splits.test
     if args.max_train_samples and args.max_train_samples < len(train_df):
         train_df = train_df.sample(args.max_train_samples, random_state=args.seed).reset_index(drop=True)
+    if args.smoke_test:
+        val_df = val_df.sample(min(SMOKE_EVAL_SAMPLES, len(val_df)), random_state=args.seed).reset_index(drop=True)
+        test_df = test_df.sample(min(SMOKE_EVAL_SAMPLES, len(test_df)), random_state=args.seed).reset_index(drop=True)
     n_labels = len(splits.labels)
-    log.info("train=%d val=%d test=%d classes=%d", len(train_df), len(splits.val), len(splits.test), n_labels)
+    log.info("train=%d val=%d test=%d classes=%d", len(train_df), len(val_df), len(test_df), n_labels)
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     max_length = min(args.max_length, tokenizer.model_max_length)
@@ -147,8 +186,8 @@ def main() -> None:
         return NewsDataset(frame["text"], frame["label_id"], tokenizer, max_length)
 
     train_loader = DataLoader(make_ds(train_df), batch_size=args.batch_size, shuffle=True, collate_fn=collator)
-    val_loader = DataLoader(make_ds(splits.val), batch_size=eval_bs, collate_fn=collator)
-    test_loader = DataLoader(make_ds(splits.test), batch_size=eval_bs, collate_fn=collator)
+    val_loader = DataLoader(make_ds(val_df), batch_size=eval_bs, collate_fn=collator)
+    test_loader = DataLoader(make_ds(test_df), batch_size=eval_bs, collate_fn=collator)
 
     # ---- model / optimiser --------------------------------------------------
     model = AutoModelForSequenceClassification.from_pretrained(
@@ -230,16 +269,19 @@ def main() -> None:
     model = AutoModelForSequenceClassification.from_pretrained(best_dir).to(device)
     y_test, p_test = run_eval(model, test_loader, device, amp_ctx)
     metrics = save_report(y_test, p_test, splits.labels, out, prefix="test")
-    save_predictions(splits.test, p_test, splits.labels, out / "test_predictions.csv")
+    save_predictions(test_df, p_test, splits.labels, out / "test_predictions.csv")
     save_label_map(splits.labels, out)
     (out / "history.json").write_text(json.dumps(history, indent=2), encoding="utf-8")
     (out / "run_config.json").write_text(
         json.dumps({**vars(args), "device": str(device), "best_val_macro_f1": best_f1,
-                    "n_train": len(train_df), "n_val": len(splits.val), "n_test": len(splits.test)},
+                    "n_train": len(train_df), "n_val": len(val_df), "n_test": len(test_df)},
                    indent=2),
         encoding="utf-8",
     )
-    log.info("TEST  accuracy=%.4f  macro-F1=%.4f", metrics["accuracy"], metrics["macro_f1"])
+    if args.smoke_test:
+        log.warning("SMOKE TEST finished. These scores (accuracy=%.4f) are NOT a real result.", metrics["accuracy"])
+    else:
+        log.info("TEST  accuracy=%.4f  macro-F1=%.4f", metrics["accuracy"], metrics["macro_f1"])
     log.info("Artifacts written to %s", out)
 
 

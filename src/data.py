@@ -1,6 +1,7 @@
 """Dataset loading, cleaning and deterministic stratified splitting."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -105,6 +106,41 @@ def make_splits(
         test=test.reset_index(drop=True),
         labels=labels,
     )
+
+
+def article_id(text: str) -> str:
+    """Short, stable identifier of an article (hash of its cleaned text)."""
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+
+
+def check_no_overlap(splits: Splits) -> None:
+    """Raise if any article text appears in more than one split (data leakage)."""
+    sets = {
+        "train": set(splits.train["text"]),
+        "val": set(splits.val["text"]),
+        "test": set(splits.test["text"]),
+    }
+    for a, b in (("train", "val"), ("train", "test"), ("val", "test")):
+        shared = sets[a] & sets[b]
+        if shared:
+            raise ValueError(f"Data leakage: {len(shared)} article(s) appear in both {a} and {b}")
+    log.info("Leakage check passed: no article appears in more than one split")
+
+
+def save_split_definition(splits: Splits, path: str | Path) -> None:
+    """Save which article (by hash id) is in which split, so the split can be audited
+    and reproduced without storing the article text."""
+    rows = []
+    for name in ("train", "val", "test"):
+        part = getattr(splits, name)
+        rows.append(
+            pd.DataFrame(
+                {"id": part["text"].map(article_id), "label": part["label"], "split": name}
+            )
+        )
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    pd.concat(rows).to_csv(out, index=False)
 
 
 def save_label_map(labels: list[str], out_dir: str | Path) -> None:

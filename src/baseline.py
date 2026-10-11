@@ -16,7 +16,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score
 from sklearn.pipeline import FeatureUnion, Pipeline
 
-from .data import load_dataset, make_splits, save_label_map
+from .data import check_no_overlap, load_dataset, make_splits, save_label_map, save_split_definition
 from .metrics import save_predictions, save_report
 from .text_utils import tokenize
 
@@ -74,6 +74,7 @@ def main() -> None:
 
     df = load_dataset(args.data, args.text_col, args.label_col)
     splits = make_splits(df, args.val_size, args.test_size, args.seed)
+    check_no_overlap(splits)
     log.info("train=%d val=%d test=%d", len(splits.train), len(splits.val), len(splits.test))
 
     best = None
@@ -93,6 +94,7 @@ def main() -> None:
     metrics = save_report(splits.test["label_id"], pred, splits.labels, out, prefix="test")
     save_predictions(splits.test, pred, splits.labels, out / "test_predictions.csv")
     save_label_map(splits.labels, out)
+    save_split_definition(splits, out / "splits.csv")
     joblib.dump({"pipeline": pipe, "labels": splits.labels}, out / "model.joblib")
     (out / "run_config.json").write_text(
         json.dumps(

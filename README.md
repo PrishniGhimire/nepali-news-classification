@@ -21,21 +21,29 @@ Classify Nepali news articles by topic (politics, sports, economy, ...) with a f
 | Transformer | `src/train_transformer.py` | PyTorch fine-tuning loop on Hugging Face models: AdamW, warmup + linear decay, mixed precision, grad accumulation/clipping, optional class weights, early stopping on val macro-F1 |
 | Evaluation | `src/metrics.py` | Accuracy, macro/weighted F1, per-class report, confusion matrix, per-example predictions |
 | Inference | `src/predict.py` | Classify text from the command line with either model |
-| Comparison | `src/compare.py` | Markdown table of all runs |
+| Comparison | `src/compare.py` | Markdown table of all runs; writes `results/comparison.csv` |
+| Data summary | `src/inspect_data.py` | Class counts, text lengths, duplicates, and (optionally) true token lengths and truncation share |
+| Error analysis | `src/error_analysis.py` | Accuracy by article length, top confusions, example errors, paired McNemar test between two models |
+| Demo app | `app.py` | Streamlit page: paste an article, see the predicted topic and probabilities |
 | Data sampling | `scripts/prepare_np20ng.py` | Draws a class-balanced sample from the full np20ng CSV |
 
-Both models use the same seed-controlled split, so their test scores are directly comparable.
+Both models use the same seed-controlled split, so their test scores are directly comparable. Every run also saves `splits.csv` (article id + split) and checks that no article appears in two splits.
+
+> **Note on this repository.** The first version of the project was built step by step; this version adds the pieces needed to reproduce it from a clean checkout (pinned requirements, config file, smoke-test mode, Colab notebook, more tests, data summary, error-analysis script, demo app). The reported numbers below come from the original runs; they have not been re-run with the added tooling.
 
 ## Setup
+
+Python 3.12 was used (3.11+ should work).
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+python -m pytest -q          # 19 tests, no GPU or downloads needed
 ```
 
 Run all commands from the project root (the saved baseline refers to `src.text_utils`).
 
-Fine-tuning XLM-RoBERTa-base needs a GPU in practice. It ran in about 2.5 minutes per epoch on a free Colab GPU, but is impractical on an 8 GB laptop.
+Fine-tuning XLM-RoBERTa-base needs a GPU in practice. It ran in about 2.5 minutes per epoch on a free Colab T4 GPU, but is impractical on an 8 GB laptop. `notebooks/colab_training.ipynb` runs the whole pipeline on Colab.
 
 ## Data
 
@@ -76,8 +84,20 @@ python -m src.baseline --data data/news.csv --output_dir outputs/baseline
 python -m src.train_transformer --data data/news.csv --model_name xlm-roberta-base \
     --max_length 256 --batch_size 16 --epochs 3 --lr 2e-5 --class_weights
 
-# 3. Compare
+# 3. Compare (also writes results/comparison.csv)
 python -m src.compare
+```
+
+The same transformer settings are stored in `configs/xlm-roberta-base.json`, so this is equivalent:
+
+```bash
+python -m src.train_transformer --config configs/xlm-roberta-base.json
+```
+
+Command-line flags override the config. To check that the training code runs end to end in about a minute (tiny subset, 1 epoch; the scores are meaningless and these runs are skipped by `src.compare`):
+
+```bash
+python -m src.train_transformer --config configs/xlm-roberta-base.json --smoke_test
 ```
 
 Each run writes to `outputs/<name>/`: `test_metrics.json`, `test_classification_report.txt`, `test_confusion_matrix.png`, `test_predictions.csv` (for error analysis), `labels.json`, `run_config.json`, and the model (`model.joblib` or `best/`). Transformer runs also save `history.json` (per-epoch loss and validation metrics).
@@ -99,7 +119,28 @@ python -m src.predict --model outputs/baseline/model.joblib --text "नेपा
 python -m src.predict --model outputs/xlm-roberta-base/best --file headlines.txt --top_k 3
 ```
 
-The `best/` model folder (about 1 GB) is not stored in this repository; retrain or copy it from your training machine.
+The `best/` model folder (about 1 GB) and `model.joblib` are not stored in this repository. If the model file is missing, the command prints how to train one.
+
+### Demo app
+
+```bash
+streamlit run app.py
+```
+
+Pick a trained model, paste an article, and it shows the predicted topic with probabilities. It only predicts a topic; it does not translate or fact-check.
+
+## Inspect the data and analyse errors
+
+```bash
+# Class counts, length statistics, duplicates (add --tokenizer to measure truncation at 256 tokens)
+python -m src.inspect_data --data data/news.csv --tokenizer xlm-roberta-base
+
+# Errors of one model, optionally compared against another
+python -m src.error_analysis --predictions outputs/xlm-roberta-base/test_predictions.csv \
+    --title xlm-roberta-base --other outputs/baseline/test_predictions.csv --other_title baseline
+```
+
+These write `results/data_summary.json` and `results/error_analysis.md`. Run them yourself to regenerate; the committed prose in [Error analysis](#error-analysis) was written by reading the confusion matrices and example articles by hand.
 
 ## Results
 
@@ -151,7 +192,7 @@ With only 50 test articles per category, changes of about 0.05–0.08 are a hand
 - 999 test articles (about 50 per category), so per-category numbers are noisy.
 - Trained on a 10,000-article class-balanced sample of a 200,000+ article corpus; real news is not class-balanced.
 - Labels are derived automatically from site sections, which adds noise and caps achievable accuracy.
-- Articles are truncated to 256 tokens (median article length is about 1,350 characters).
+- Articles are truncated to 256 tokens: 64.8% of articles are longer than that (median 340 tokens, 90th percentile 1,180; see `results/data_summary.json`), so the models see only the start of most articles.
 - Only 3 epochs; validation was still improving.
 
 ## Design notes
@@ -172,4 +213,8 @@ python -m pytest -q
 - Multi-seed runs to report mean ± std, and more epochs (validation was still improving).
 - Compare more multilingual models (`google/muril-base-cased`, `bert-base-multilingual-cased`) or continue pre-training on unlabeled Nepali news.
 - Merge or relabel overlapping categories (for example Business/Economy/Market/Bank) and re-evaluate.
-- Wrap `src/predict.py` in a small FastAPI or Gradio demo.
+- Deploy the Streamlit demo (needs the model weights hosted somewhere, e.g. the Hugging Face Hub).
+
+## Licence
+
+MIT (see `LICENSE`). The np20ng dataset has its own licence and access conditions.

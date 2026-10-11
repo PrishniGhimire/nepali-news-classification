@@ -1,5 +1,7 @@
 """Classify new Nepali text with a trained baseline or transformer.
 
+This classifies the TOPIC of a text. It does not translate, summarise or fact-check.
+
 Usage:
     python -m src.predict --model outputs/baseline/model.joblib --text "नेपाली क्रिकेट टोलीले जित्यो"
     python -m src.predict --model outputs/xlm-roberta-base/best --file headlines.txt --top_k 3
@@ -13,9 +15,21 @@ import numpy as np
 
 from .text_utils import clean_text
 
+MISSING_MODEL_HELP = (
+    "No trained model found at '{path}'.\n"
+    "Train one first, for example:\n"
+    "  python -m src.baseline --data data/news.csv --output_dir outputs/baseline\n"
+    "  python -m src.train_transformer --config configs/xlm-roberta-base.json\n"
+    "Model weights are not stored in the Git repository (see the README, 'Predict')."
+)
+
 
 def load_predictor(model_path: str | Path):
-    """Return ``(predict_proba_fn, labels)`` for a .joblib baseline or a saved HF model directory."""
+    """Return ``(predict_proba_fn, labels)`` for a .joblib baseline or a saved HF model directory.
+
+    ``predict_proba_fn`` maps a list of cleaned texts to an array of shape (n_texts, n_labels);
+    column ``i`` corresponds to ``labels[i]``.
+    """
     path = Path(model_path)
     if path.is_file() and path.suffix == ".joblib":
         import joblib
@@ -24,7 +38,7 @@ def load_predictor(model_path: str | Path):
         pipeline, labels = bundle["pipeline"], bundle["labels"]
         return (lambda texts: pipeline.predict_proba(texts)), labels
 
-    if path.is_dir():
+    if path.is_dir() and (path / "config.json").exists():
         import torch
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
@@ -45,7 +59,7 @@ def load_predictor(model_path: str | Path):
 
         return predict_proba, labels
 
-    raise FileNotFoundError(f"{model_path} is neither a .joblib file nor a saved model directory")
+    raise FileNotFoundError(MISSING_MODEL_HELP.format(path=model_path))
 
 
 def main() -> None:
@@ -62,7 +76,10 @@ def main() -> None:
     if not texts:
         p.error("provide --text and/or --file")
 
-    predict_proba, labels = load_predictor(args.model)
+    try:
+        predict_proba, labels = load_predictor(args.model)
+    except FileNotFoundError as err:
+        raise SystemExit(str(err))
     probs = predict_proba([clean_text(t) for t in texts])
     for text, row in zip(texts, probs):
         top = np.argsort(row)[::-1][: args.top_k]
